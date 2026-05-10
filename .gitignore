@@ -1,0 +1,5 @@
+input/*.ppt
+input/*.pptx
+venv/
+powerpoint_text_extractor.log
+all_powerpoint_text.txt
