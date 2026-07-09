@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from pptx import Presentation
+from pptx.shapes.group import GroupShape
 
 
 HARDCODED_INPUT_DIR = "input"
@@ -66,7 +67,9 @@ def find_powerpoint_files(input_dir: Path, recursive: bool) -> List[Path]:
     files = [
         path
         for path in input_dir.glob(pattern)
-        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS
+        if path.is_file()
+        and path.suffix.lower() in SUPPORTED_EXTENSIONS
+        and not path.name.startswith("~$")
     ]
 
     return sorted(files)
@@ -96,10 +99,13 @@ def convert_ppt_to_pptx(
 
     logger.info("Converting .ppt to .pptx: %s", ppt_path)
 
+    profile_dir = conversion_dir / "lo_profile"
+
     result = subprocess.run(
         [
             command,
             "--headless",
+            f"-env:UserInstallation={profile_dir.resolve().as_uri()}",
             "--convert-to",
             "pptx",
             "--outdir",
@@ -158,7 +164,7 @@ def extract_text_from_shape(shape) -> List[str]:
         if table_lines:
             text_blocks.append("\n".join(table_lines))
 
-    if shape.shape_type == 6:
+    if isinstance(shape, GroupShape):
         for grouped_shape in shape.shapes:
             text_blocks.extend(extract_text_from_shape(grouped_shape))
 
@@ -168,25 +174,21 @@ def extract_text_from_shape(shape) -> List[str]:
 def extract_notes_text(slide) -> List[str]:
     notes_blocks: List[str] = []
 
-    try:
-        if not slide.has_notes_slide:
-            return notes_blocks
+    if not slide.has_notes_slide:
+        return notes_blocks
 
-        notes_slide = slide.notes_slide
+    notes_slide = slide.notes_slide
 
-        for paragraph in notes_slide.notes_text_frame.paragraphs:
-            paragraph_text = paragraph.text.strip()
+    for paragraph in notes_slide.notes_text_frame.paragraphs:
+        paragraph_text = paragraph.text.strip()
 
-            if paragraph_text:
-                notes_blocks.append(paragraph_text)
-
-    except Exception:
-        pass
+        if paragraph_text:
+            notes_blocks.append(paragraph_text)
 
     return notes_blocks
 
 
-def extract_text_from_pptx(pptx_path: Path) -> List[ExtractedSlide]:
+def extract_text_from_pptx(pptx_path: Path, logger: logging.Logger) -> List[ExtractedSlide]:
     presentation = Presentation(str(pptx_path))
 
     extracted_slides: List[ExtractedSlide] = []
@@ -195,9 +197,26 @@ def extract_text_from_pptx(pptx_path: Path) -> List[ExtractedSlide]:
         text_blocks: List[str] = []
 
         for shape in slide.shapes:
-            text_blocks.extend(extract_text_from_shape(shape))
+            try:
+                text_blocks.extend(extract_text_from_shape(shape))
+            except Exception as exc:
+                logger.warning(
+                    "Skipping unreadable shape on slide %d of %s: %s",
+                    slide_index,
+                    pptx_path,
+                    exc,
+                )
 
-        notes_blocks = extract_notes_text(slide)
+        try:
+            notes_blocks = extract_notes_text(slide)
+        except Exception as exc:
+            notes_blocks = []
+            logger.warning(
+                "Failed to extract speaker notes on slide %d of %s: %s",
+                slide_index,
+                pptx_path,
+                exc,
+            )
 
         if notes_blocks:
             text_blocks.append("[Speaker Notes]\n" + "\n".join(notes_blocks))
@@ -233,7 +252,7 @@ def extract_presentation(
 
     try:
         if source_path.suffix.lower() == ".pptx":
-            slides = extract_text_from_pptx(source_path)
+            slides = extract_text_from_pptx(source_path, logger)
 
         elif source_path.suffix.lower() == ".ppt":
             conversion_dir = temp_dir / f"converted_{source_path.stem}_{short_hash(str(source_path))}"
@@ -245,7 +264,7 @@ def extract_presentation(
                 logger=logger,
             )
 
-            slides = extract_text_from_pptx(converted_path)
+            slides = extract_text_from_pptx(converted_path, logger)
 
         else:
             raise ValueError(f"Unsupported file type: {source_path.suffix}")
@@ -433,6 +452,9 @@ def main() -> None:
 
     print(f"Text written to: {output_file.resolve()}")
     print(f"Summary: total={len(presentations)}, successful={successful}, failed={failed}")
+
+    if failed:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
