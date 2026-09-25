@@ -137,6 +137,71 @@ def convert_ppt_to_pptx(
     return converted_candidates[0]
 
 
+def extract_axis_title(chart, axis_name: str) -> str:
+    try:
+        axis = getattr(chart, axis_name)
+    except ValueError:
+        return ""
+
+    if not axis.has_title:
+        return ""
+
+    return axis.axis_title.text_frame.text.strip()
+
+
+def extract_text_from_chart(chart) -> List[str]:
+    chart_lines: List[str] = []
+
+    if chart.has_title:
+        title = chart.chart_title.text_frame.text.strip()
+
+        if title:
+            chart_lines.append(f"Title: {title}")
+
+    axis_titles = [
+        title
+        for title in (
+            extract_axis_title(chart, "category_axis"),
+            extract_axis_title(chart, "value_axis"),
+        )
+        if title
+    ]
+
+    if axis_titles:
+        chart_lines.append("Axis Titles: " + " | ".join(axis_titles))
+
+    categories: List[str] = []
+
+    try:
+        for plot in chart.plots:
+            for category in plot.categories:
+                label = "" if category is None else str(category).strip()
+
+                if label and label not in categories:
+                    categories.append(label)
+    except (KeyError, ValueError):
+        pass
+
+    if categories:
+        chart_lines.append("Categories: " + " | ".join(categories))
+
+    series_names: List[str] = []
+
+    try:
+        for series in chart.series:
+            name = (series.name or "").strip()
+
+            if name and name not in series_names:
+                series_names.append(name)
+    except (KeyError, ValueError):
+        pass
+
+    if series_names:
+        chart_lines.append("Series: " + " | ".join(series_names))
+
+    return chart_lines
+
+
 def extract_text_from_shape(shape) -> List[str]:
     text_blocks: List[str] = []
 
@@ -163,6 +228,12 @@ def extract_text_from_shape(shape) -> List[str]:
 
         if table_lines:
             text_blocks.append("\n".join(table_lines))
+
+    if shape.has_chart:
+        chart_lines = extract_text_from_chart(shape.chart)
+
+        if chart_lines:
+            text_blocks.append("[Chart]\n" + "\n".join(chart_lines))
 
     if isinstance(shape, GroupShape):
         for grouped_shape in shape.shapes:
